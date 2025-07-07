@@ -1,0 +1,225 @@
+\section{Referências Bibliográficas}
+
+\begin{thebibliography}{9}
+
+\bibitem{Brooks1995}
+F. P. Brooks, Jr. (1995). \textit{The Mythical Man-Month: Essays on Software Engineering, Anniversary Edition}. Addison-Wesley Professional.
+
+\bibitem{Cassandras2008}
+C. G. Cassandras, \& S. Lafortune. (2008). \textit{Introduction to Discrete Event Systems} (2nd ed.). Springer.
+
+\bibitem{Chwif2015}
+L. Chwif, \& A. C. Medina. (2015). \textit{Modelagem e simulação de eventos discretos: teoria & aplicações} (4ª ed.). Elsevier Brasil.
+
+\bibitem{Cury2001}
+J. E. R. Cury. (2001). Teoria de controle supervisório de sistemas a eventos discretos. \textit{V Simpósio Brasileiro de Automação Inteligente}. DOI: \url{https://doi.org/10.5753/sbes.2001.23982}
+
+\bibitem{Forsgren2018}
+N. Forsgren, J. Humble, \& G. Kim. (2018). \textit{Accelerate: The Science of Lean Software and DevOps}. IT Revolution Press.
+
+\bibitem{Reinertsen2009}
+D. G. Reinertsen. (2009). \textit{The Principles of Product Development Flow: Second Generation Lean Product Development}. Celeritas Publishing.
+
+\bibitem{Weber2001}
+K. C. Weber. (2001). \textit{Qualidade e produtividade em software}. Makron Books.
+
+\end{thebibliography}
+
+\newpage
+\appendix
+\section{Apêndice: Código-Fonte da Simulação}
+
+O código a seguir foi utilizado para executar todas as simulações descritas neste trabalho. As variáveis de cenário, como \texttt{USA\_IA} e \texttt{COMPOSICAO\_EQUIPE}, foram ajustadas para cada execução experimental.
+
+\begin{lstlisting}[language=Python, caption=Código-fonte completo do simulador em Python/SimPy., label=lst:simulador]
+import simpy
+import random
+import numpy as np
+from collections import namedtuple
+
+# 1. PARÂMETROS GLOBAIS DA SIMULAÇÃO
+RANDOM_SEED = 42
+TEMPO_TOTAL_SIMULACAO = 400
+
+# 2. PARÂMETROS DO CENÁRIO (Ajustados para cada execução)
+USA_IA = False
+COMPOSICAO_EQUIPE = {
+    "Senior": 3,
+    "Pleno": 2,
+    "Junior": 3
+}
+INTERVALO_MEDIO_CHEGADA_TAREFAS = 4.0
+
+# --- Configurações do Modelo ---
+TOTAL_DEVS = sum(COMPOSICAO_EQUIPE.values())
+FATORES_TEMPO_SENIORIDADE = {
+    "Senior": {"codificacao": 0.7, "revisao": 0.8, "qa": 0.8, "correcao_bug": 0.7},
+    "Pleno":  {"codificacao": 1.0, "revisao": 1.0, "qa": 1.0, "correcao_bug": 1.0},
+    "Junior": {"codificacao": 1.5, "revisao": 1.3, "qa": 1.3, "correcao_bug": 1.6},
+}
+FATORES_QUALIDADE_SENIORIDADE = { "Senior": 0.5, "Pleno":  1.0, "Junior": 1.8 }
+FATORES_GANHO_IA_SENIORIDADE = {
+    "Senior": {"codificacao": 0.35, "revisao": 0.15, "qa": 0.25, "qualidade_bug": 0.75},
+    "Pleno":  {"codificacao": 0.30, "revisao": 0.10, "qa": 0.20, "qualidade_bug": 0.7},
+    "Junior": {"codificacao": 0.25, "revisao": 0.10, "qa": 0.15, "qualidade_bug": 0.8},
+}
+TEMPO_MEDIO_CODIFICACAO_BASE = 10.0
+DESVIO_PADRAO_CODIFICACAO = 2.0
+PROB_INTRODUCAO_BUG_BASE = 0.25
+TEMPO_MEDIO_REVISAO_BASE = 2.0
+DESVIO_PADRAO_REVISAO = 0.5
+PROB_BUG_ENCONTRADO_REVISAO = 0.40
+TEMPO_MEDIO_TESTE_QA_BASE = 3.0
+DESVIO_PADRAO_TESTE_QA = 1.0
+PROB_BUG_ENCONTRADO_QA = 0.60
+TEMPO_MEDIO_CORRECAO_BUG_BASE = 4.0 
+DESVIO_PADRAO_CORRECAO_BUG = 1.0
+
+# 3. INICIALIZAÇÃO DE MÉTRICAS E AMBIENTE
+lista_lead_times = []
+lista_tarefas_com_bug_introduzido_id = []
+lista_tarefas_com_bug_corrigido_id = []
+lista_ciclos_dev_por_tarefa_concluida = []
+lista_bugs_escaparam_id = []
+lista_registros_utilizacao = []
+total_tarefas_concluidas_global = 0
+id_tarefa_global_contador = 0
+
+rng_chegadas = np.random.default_rng(RANDOM_SEED)
+random.seed(RANDOM_SEED)
+env = simpy.Environment()
+
+# 4. DEFINIÇÕES DE CLASSES
+class Desenvolvedor:
+    def __init__(self, id_dev, senioridade):
+        self.id = id_dev
+        self.senioridade = senioridade
+    def __repr__(self):
+        return f"Dev({self.id}, {self.senioridade})"
+
+class Tarefa:
+    def __init__(self, complexidade=1.0):
+        global id_tarefa_global_contador
+        id_tarefa_global_contador += 1
+        self.id = id_tarefa_global_contador
+        self.complexidade = complexidade
+        self.tempo_chegada_sistema = env.now
+        self.tempo_inicio_desenvolvimento = 0
+        self.tempo_conclusao = 0
+        self.bug_foi_introduzido = False
+        self.bug_detectado = False
+        self.ciclos_desenvolvimento = 0
+
+    def registrar_inicio_dev(self):
+        if self.tempo_inicio_desenvolvimento == 0:
+            self.tempo_inicio_desenvolvimento = env.now
+
+    def registrar_conclusao(self):
+        self.tempo_conclusao = env.now
+        global total_tarefas_concluidas_global, lista_lead_times
+        global lista_ciclos_dev_por_tarefa_concluida, lista_tarefas_com_bug_corrigido_id
+        global lista_bugs_escaparam_id
+        
+        total_tarefas_concluidas_global +=1
+        lista_lead_times.append(self.tempo_conclusao - self.tempo_chegada_sistema)
+        lista_ciclos_dev_por_tarefa_concluida.append(self.ciclos_desenvolvimento)
+        if self.bug_detectado:
+             lista_tarefas_com_bug_corrigido_id.append(self.id)
+        if self.bug_foi_introduzido and not self.bug_detectado:
+            lista_bugs_escaparam_id.append(self.id)
+
+# 5. DEFINIÇÃO DE RECURSOS
+pool_desenvolvedores = simpy.Store(env)
+
+# 6. DEFINIÇÕES DE FUNÇÕES/PROCESSOS
+def monitor_utilizacao(env, dev_pool, total_devs, intervalo_amostragem=1.0):
+    global lista_registros_utilizacao
+    while True:
+        devs_disponiveis = len(dev_pool.items)
+        devs_ocupados = total_devs - devs_disponiveis
+        utilizacao_atual = (devs_ocupados / total_devs) * 100
+        lista_registros_utilizacao.append(utilizacao_atual)
+        yield env.timeout(intervalo_amostragem)
+
+def ciclo_de_vida_tarefa(tarefa_obj, usa_ia_cenario, dev_pool):
+    tarefa_obj.registrar_inicio_dev()
+    while True:
+        tarefa_obj.ciclos_desenvolvimento += 1
+        dev_alocado = yield dev_pool.get()
+        tempo_trabalho_dev = 0
+        if tarefa_obj.ciclos_desenvolvimento > 1:
+            fator_tempo = FATORES_TEMPO_SENIORIDADE[dev_alocado.senioridade]['correcao_bug']
+            tempo_trabalho_dev = random.normalvariate(TEMPO_MEDIO_CORRECAO_BUG_BASE, DESVIO_PADRAO_CORRECAO_BUG) * fator_tempo
+        else:
+            fator_tempo = FATORES_TEMPO_SENIORIDADE[dev_alocado.senioridade]['codificacao']
+            tempo_base = random.normalvariate(TEMPO_MEDIO_CODIFICACAO_BASE, DESVIO_PADRAO_CODIFICACAO)
+            tempo_trabalho_dev = tempo_base * tarefa_obj.complexidade * fator_tempo
+            if usa_ia_cenario:
+                fator_ganho_ia = FATORES_GANHO_IA_SENIORIDADE[dev_alocado.senioridade]['codificacao']
+                tempo_trabalho_dev *= (1 - fator_ganho_ia)
+            prob_intro_bug = PROB_INTRODUCAO_BUG_BASE * FATORES_QUALIDADE_SENIORIDADE[dev_alocado.senioridade]
+            if usa_ia_cenario:
+                fator_qualidade_ia = FATORES_GANHO_IA_SENIORIDADE[dev_alocado.senioridade]['qualidade_bug']
+                prob_intro_bug *= fator_qualidade_ia
+            if random.random() < prob_intro_bug:
+                tarefa_obj.bug_foi_introduzido = True
+                lista_tarefas_com_bug_introduzido_id.append(tarefa_obj.id)
+        yield env.timeout(max(0.5, tempo_trabalho_dev))
+        yield dev_pool.put(dev_alocado)
+        
+        dev_revisor = yield dev_pool.get()
+        fator_tempo_revisao = FATORES_TEMPO_SENIORIDADE[dev_revisor.senioridade]['revisao']
+        tempo_revisao = random.normalvariate(TEMPO_MEDIO_REVISAO_BASE, DESVIO_PADRAO_REVISAO) * tarefa_obj.complexidade * fator_tempo_revisao
+        if usa_ia_cenario:
+            fator_ganho_ia_revisao = FATORES_GANHO_IA_SENIORIDADE[dev_revisor.senioridade]['revisao']
+            tempo_revisao *= (1 - fator_ganho_ia_revisao)
+        yield env.timeout(max(0.2, tempo_revisao))
+        yield dev_pool.put(dev_revisor)
+        
+        if tarefa_obj.bug_foi_introduzido and not tarefa_obj.bug_detectado and random.random() < PROB_BUG_ENCONTRADO_REVISAO:
+            tarefa_obj.bug_detectado = True
+            continue
+            
+        dev_qa = yield dev_pool.get()
+        fator_tempo_qa = FATORES_TEMPO_SENIORIDADE[dev_qa.senioridade]['qa']
+        tempo_qa = random.normalvariate(TEMPO_MEDIO_TESTE_QA_BASE, DESVIO_PADRAO_TESTE_QA) * tarefa_obj.complexidade * fator_tempo_qa
+        if usa_ia_cenario:
+            fator_ganho_ia_qa = FATORES_GANHO_IA_SENIORIDADE[dev_qa.senioridade]['qa']
+            tempo_qa *= (1 - fator_ganho_ia_qa)
+        yield env.timeout(max(0.2, tempo_qa))
+        yield dev_pool.put(dev_qa)
+        
+        if tarefa_obj.bug_foi_introduzido and not tarefa_obj.bug_detectado and random.random() < PROB_BUG_ENCONTRADO_QA:
+            tarefa_obj.bug_detectado = True
+            continue
+        
+        tarefa_obj.registrar_conclusao()
+        break
+
+def gerador_de_tarefas(intervalo_chegada_local, rng_para_chegadas, dev_pool):
+    while True:
+        complexidade_tarefa = random.choice([0.5, 1.0, 1.0, 1.5])
+        nova_tarefa = Tarefa(complexidade=complexidade_tarefa)
+        env.process(ciclo_de_vida_tarefa(nova_tarefa, USA_IA, dev_pool))
+        tempo_ate_proxima_tarefa = rng_para_chegadas.exponential(scale=intervalo_chegada_local)
+        yield env.timeout(max(0.1, tempo_ate_proxima_tarefa))
+
+# 7. BLOCO PRINCIPAL DE EXECUÇÃO
+# Preenche o pool de desenvolvedores
+dev_id_counter = 0
+for senioridade, quantidade in COMPOSICAO_EQUIPE.items():
+    for _ in range(quantidade):
+        dev_id_counter += 1
+        dev = Desenvolvedor(id_dev=dev_id_counter, senioridade=senioridade)
+        pool_desenvolvedores.put(dev)
+
+# Inicia a simulação
+env.process(gerador_de_tarefas(INTERVALO_MEDIO_CHEGADA_TAREFAS, rng_chegadas, pool_desenvolvedores))
+env.process(monitor_utilizacao(env, pool_desenvolvedores, TOTAL_DEVS))
+env.run(until=TEMPO_TOTAL_SIMULACAO)
+
+# 8. BLOCO DE APRESENTAÇÃO DE RESULTADOS (saída no terminal)
+# ... (código para imprimir resultados no console, omitido aqui para brevidade)
+\end{lstlisting}
+
+\end{document}
